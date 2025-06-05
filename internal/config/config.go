@@ -50,8 +50,8 @@ func Execute(ctx context.Context) error {
 	return RootCommand.ExecuteContext(ctx)
 }
 
-func Init(version, commit string) {
-	setVersion(version, commit)
+func Init(version string) {
+	setVersion(version)
 	registerFlags()
 }
 
@@ -206,8 +206,8 @@ func defaultCollector(collector *Collector, config *Config) {
 	}
 }
 
-func setVersion(version, commit string) {
-	RootCommand.Version = version + "-" + commit
+func setVersion(version string) {
+	RootCommand.Version = version
 	viperInstance.SetDefault(VersionKey, version)
 }
 
