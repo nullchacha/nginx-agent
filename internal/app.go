@@ -30,7 +30,7 @@ func NewApp(commit, version string) *App {
 }
 
 func (a *App) Run(ctx context.Context) error {
-	config.Init(a.version, a.commit)
+	config.Init(a.version)
 
 	config.RegisterRunner(func(_ *cobra.Command, _ []string) {
 		err := config.RegisterConfigFile()

@@ -65,8 +65,7 @@ func TestResolveConfig(t *testing.T) {
 
 func TestSetVersion(t *testing.T) {
 	viperInstance = viper.NewWithOptions(viper.KeyDelimiter(KeyDelimiter))
-	setVersion("v1.2.3", "asdf1234")
-
+	setVersion("v1.2.3")
 	assert.Equal(t, "v1.2.3", viperInstance.GetString(VersionKey))
 }
 
