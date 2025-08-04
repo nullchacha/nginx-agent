@@ -39,9 +39,10 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.3
 	github.com/spf13/pflag v1.0.6
 	github.com/stretchr/testify v1.10.0
-	github.com/testcontainers/testcontainers-go v0.36.0
-	github.com/trivago/grok v1.0.0
-	go.opentelemetry.io/collector/component v1.30.0
+        github.com/testcontainers/testcontainers-go v0.36.0
+        github.com/trivago/grok v1.0.0
+       github.com/leodido/go-syslog/v4 v4.2.0
+        go.opentelemetry.io/collector/component v1.30.0
 	go.opentelemetry.io/collector/component/componenttest v0.124.0
 	go.opentelemetry.io/collector/config/confighttp v0.124.0
 	go.opentelemetry.io/collector/confmap v1.30.0
@@ -148,9 +149,8 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
-	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
-	github.com/knadh/koanf/v2 v2.1.2 // indirect
-	github.com/leodido/go-syslog/v4 v4.2.0 // indirect
+        github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
+        github.com/knadh/koanf/v2 v2.1.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/leodido/ragel-machinery v0.0.0-20190525184631-5f46317e436b // indirect
 	github.com/lightstep/go-expohisto v1.0.0 // indirect
