@@ -49,6 +49,7 @@ var (
 	CollectorConfigPathKey                      = pre(CollectorRootKey) + "config_path"
 	CollectorExportersKey                       = pre(CollectorRootKey) + "exporters"
 	CollectorAttributeProcessorKey              = pre(CollectorProcessorsKey) + "attribute"
+	CollectorSyslogParserProcessorKey           = pre(CollectorProcessorsKey) + "syslog_parser"
 	CollectorDebugExporterKey                   = pre(CollectorExportersKey) + "debug"
 	CollectorPrometheusExporterKey              = pre(CollectorExportersKey) + "prometheus"
 	CollectorPrometheusExporterServerHostKey    = pre(CollectorPrometheusExporterKey) + "server_host"

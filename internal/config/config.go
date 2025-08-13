@@ -837,6 +837,10 @@ func resolveProcessors() Processors {
 		}
 	}
 
+	if viperInstance.IsSet(CollectorSyslogParserProcessorKey) {
+		processors.SyslogParser = &SyslogParser{}
+	}
+
 	return processors
 }
 

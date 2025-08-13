@@ -152,9 +152,10 @@ type (
 
 	// OTel Collector Processors configuration.
 	Processors struct {
-		Attribute *Attribute `yaml:"attribute" mapstructure:"attribute"`
-		Resource  *Resource  `yaml:"resource"  mapstructure:"resource"`
-		Batch     *Batch     `yaml:"batch"     mapstructure:"batch"`
+		Attribute    *Attribute    `yaml:"attribute" mapstructure:"attribute"`
+		Resource     *Resource     `yaml:"resource"  mapstructure:"resource"`
+		Batch        *Batch        `yaml:"batch"     mapstructure:"batch"`
+		SyslogParser *SyslogParser `yaml:"syslog_parser" mapstructure:"syslog_parser"`
 	}
 
 	Attribute struct {
@@ -170,6 +171,8 @@ type (
 	Resource struct {
 		Attributes []ResourceAttribute `yaml:"attributes" mapstructure:"attributes"`
 	}
+
+	SyslogParser struct{}
 
 	ResourceAttribute struct {
 		Key    string `yaml:"key"    mapstructure:"key"`

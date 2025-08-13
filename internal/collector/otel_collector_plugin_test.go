@@ -290,6 +290,7 @@ func TestCollector_ProcessNginxConfigUpdateTopic(t *testing.T) {
 			conf.Collector.Processors.Batch = nil
 			conf.Collector.Processors.Attribute = nil
 			conf.Collector.Processors.Resource = nil
+			conf.Collector.Processors.SyslogParser = nil
 			conf.Collector.Extensions.Health = nil
 			conf.Collector.Extensions.HeadersSetter = nil
 			conf.Collector.Exporters.PrometheusExporter = nil
@@ -321,6 +322,7 @@ func TestCollector_ProcessResourceUpdateTopic(t *testing.T) {
 	conf.Collector.Processors.Batch = nil
 	conf.Collector.Processors.Attribute = nil
 	conf.Collector.Processors.Resource = nil
+	conf.Collector.Processors.SyslogParser = nil
 	conf.Collector.Exporters.OtlpExporters = nil
 	conf.Collector.Exporters.PrometheusExporter = &config.PrometheusExporter{
 		Server: &config.ServerConfig{
@@ -405,6 +407,7 @@ func TestCollector_ProcessResourceUpdateTopicFails(t *testing.T) {
 	conf.Collector.Processors.Batch = nil
 	conf.Collector.Processors.Attribute = nil
 	conf.Collector.Processors.Resource = nil
+	conf.Collector.Processors.SyslogParser = nil
 	conf.Collector.Exporters.OtlpExporters = nil
 	conf.Collector.Exporters.PrometheusExporter = &config.PrometheusExporter{
 		Server: &config.ServerConfig{
@@ -669,6 +672,7 @@ func TestCollector_updateResourceAttributes(t *testing.T) {
 	conf.Collector.Processors.Batch = nil
 	conf.Collector.Processors.Attribute = nil
 	conf.Collector.Processors.Resource = nil
+	conf.Collector.Processors.SyslogParser = nil
 
 	tests := []struct {
 		name                   string
@@ -727,6 +731,7 @@ func TestCollector_updateTcplogReceivers(t *testing.T) {
 	conf.Collector.Processors.Batch = nil
 	conf.Collector.Processors.Attribute = nil
 	conf.Collector.Processors.Resource = nil
+	conf.Collector.Processors.SyslogParser = nil
 
 	collector, err := New(conf)
 	require.NoError(t, err)
