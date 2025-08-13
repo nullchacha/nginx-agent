@@ -6,38 +6,54 @@
 package managementplane
 
 import (
-	"context"
-	"testing"
-
 	"github.com/nginx/agent/v3/test/integration/utils"
 
 	mpi "github.com/nginx/agent/v3/api/grpc/mpi/v1"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestGrpc_FileWatcher(t *testing.T) {
-	ctx := context.Background()
-	teardownTest := utils.SetupConnectionTest(t, true, false,
-		"../../config/agent/nginx-config-with-grpc-client.conf")
-	defer teardownTest(t)
-
-	utils.VerifyConnection(t, 2)
-	assert.False(t, t.Failed())
-
+func (s *MPITestSuite) TestFileWatcher_Test1_TestUpdateNGINXConfig() {
 	err := utils.Container.CopyFileToContainer(
-		ctx,
+		s.ctx,
 		"../../config/nginx/nginx-with-server-block-access-log.conf",
 		"/etc/nginx/nginx.conf",
 		0o666,
 	)
-	require.NoError(t, err)
+	s.Require().NoError(err)
 
-	responses := utils.ManagementPlaneResponses(t, 2)
-	assert.Equal(t, mpi.CommandResponse_COMMAND_STATUS_OK, responses[0].GetCommandResponse().GetStatus())
-	assert.Equal(t, "Successfully updated all files", responses[0].GetCommandResponse().GetMessage())
-	assert.Equal(t, mpi.CommandResponse_COMMAND_STATUS_OK, responses[1].GetCommandResponse().GetStatus())
-	assert.Equal(t, "Successfully updated all files", responses[1].GetCommandResponse().GetMessage())
+	responses := utils.ManagementPlaneResponses(s.T(), 1, utils.MockManagementPlaneAPIAddress)
 
-	utils.VerifyUpdateDataPlaneStatus(t)
+	s.Equal(mpi.CommandResponse_COMMAND_STATUS_OK, responses[0].GetCommandResponse().GetStatus())
+	s.Equal("Successfully updated all files", responses[0].GetCommandResponse().GetMessage())
+
+	utils.VerifyUpdateDataPlaneStatus(s.T(), utils.MockManagementPlaneAPIAddress)
+}
+
+func (s *MPITestSuite) TestFileWatcher_Test2_TestCreateNGINXConfig() {
+	err := utils.Container.CopyFileToContainer(
+		s.ctx,
+		"../../config/nginx/empty-nginx.conf",
+		"/etc/nginx/test/test.conf",
+		0o666,
+	)
+	s.Require().NoError(err)
+
+	responses := utils.ManagementPlaneResponses(s.T(), 1, utils.MockManagementPlaneAPIAddress)
+	s.Equal(mpi.CommandResponse_COMMAND_STATUS_OK, responses[0].GetCommandResponse().GetStatus())
+	s.Equal("Successfully updated all files", responses[0].GetCommandResponse().GetMessage())
+
+	utils.VerifyUpdateDataPlaneStatus(s.T(), utils.MockManagementPlaneAPIAddress)
+}
+
+func (s *MPITestSuite) TestFileWatcher_Test3_TestDeleteNGINXConfig() {
+	_, _, err := utils.Container.Exec(
+		s.ctx,
+		[]string{"rm", "-rf", "/etc/nginx/test"},
+	)
+	s.Require().NoError(err)
+
+	responses := utils.ManagementPlaneResponses(s.T(), 1, utils.MockManagementPlaneAPIAddress)
+	s.Equal(mpi.CommandResponse_COMMAND_STATUS_OK, responses[0].GetCommandResponse().GetStatus())
+	s.Equal("Successfully updated all files", responses[0].GetCommandResponse().GetMessage())
+
+	utils.VerifyUpdateDataPlaneStatus(s.T(), utils.MockManagementPlaneAPIAddress)
 }

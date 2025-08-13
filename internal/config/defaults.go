@@ -14,6 +14,7 @@ const (
 	DefGracefulShutdownPeriod      = 5 * time.Second
 	DefNginxReloadMonitoringPeriod = 10 * time.Second
 	DefTreatErrorsAsWarnings       = false
+	DefNginxApiTlsCa               = ""
 
 	DefCommandServerHostKey    = ""
 	DefCommandServerPortKey    = 0
@@ -25,6 +26,17 @@ const (
 	DefCommandTLSCaKey         = ""
 	DefCommandTLSSkipVerifyKey = false
 	DefCommandTLServerNameKey  = ""
+
+	DefAuxiliaryCommandServerHostKey    = ""
+	DefAuxiliaryCommandServerPortKey    = 0
+	DefAuxiliaryCommandServerTypeKey    = "grpc"
+	DefAuxiliaryCommandAuthTokenKey     = ""
+	DefAuxiliaryCommandAuthTokenPathKey = ""
+	DefAuxiliaryCommandTLSCertKey       = ""
+	DefAuxiliaryCommandTLSKeyKey        = ""
+	DefAuxiliaryCommandTLSCaKey         = ""
+	DefAuxiliaryCommandTLSSkipVerifyKey = false
+	DefAuxiliaryCommandTLServerNameKey  = ""
 
 	// Client GRPC Settings
 	DefMaxMessageSize               = 0       // 0 = unset
@@ -62,9 +74,12 @@ const (
 	DefCollectorTLSCAPath   = "/var/lib/nginx-agent/ca.pem"
 	DefCollectorTLSSANNames = "127.0.0.1,::1,localhost"
 
-	DefCollectorBatchProcessorSendBatchSize    = 8192
-	DefCollectorBatchProcessorSendBatchMaxSize = 0
-	DefCollectorBatchProcessorTimeout          = 200 * time.Millisecond
+	DefCollectorMetricsBatchProcessorSendBatchSize    = 1000
+	DefCollectorMetricsBatchProcessorSendBatchMaxSize = 1000
+	DefCollectorMetricsBatchProcessorTimeout          = 30 * time.Second
+	DefCollectorLogsBatchProcessorSendBatchSize       = 100
+	DefCollectorLogsBatchProcessorSendBatchMaxSize    = 100
+	DefCollectorLogsBatchProcessorTimeout             = 60 * time.Second
 
 	DefCollectorExtensionsHealthServerHost      = "localhost"
 	DefCollectorExtensionsHealthServerPort      = 13133
@@ -85,6 +100,7 @@ func DefaultFeatures() []string {
 		pkg.FeatureCertificates,
 		pkg.FeatureMetrics,
 		pkg.FeatureFileWatcher,
+		pkg.FeatureLogsNap,
 	}
 }
 
@@ -95,6 +111,7 @@ func DefaultAllowedDirectories() []string {
 		"/usr/share/nginx/modules",
 		"/var/run/nginx",
 		"/var/log/nginx",
+		"/etc/app_protect",
 	}
 }
 

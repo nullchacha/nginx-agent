@@ -17,17 +17,17 @@ GOBIN 	?= $$(go env GOPATH)/bin
 # | OS_RELEASE       | OS_VERSION                                | NOTES                                                          |
 # | ---------------- | ----------------------------------------- | -------------------------------------------------------------- |
 # | amazonlinux      | 2, 2023                                   |                                                                |
-# | ubuntu           | 20.04, 22.04 24.04                        |                                                                |
+# | ubuntu           | 22.04, 24.04 25.04                		 |                                                                |
 # | debian           | bullseye-slim, bookworm-slim 			 |                                                                |
-# | redhatenterprise | 8, 9                                  	 |                                                                |
-# | rockylinux       | 8, 9                                      |                                                                |
-# | almalinux        | 8, 9                                      |                                                                |
-# | alpine           | 3.17, 3.18, 3.19, 3.20, 3.21              |                                                                |
-# | oraclelinux      | 8, 9                                		 |                                                                |
-# | suse             | sles12sp5, sle15                          |                                                                |
+# | redhatenterprise | 8, 9, 10                                	 |                                                                |
+# | rockylinux       | 8, 9, 10                                  |                                                                |
+# | almalinux        | 8, 9, 10                                  |                                                                |
+# | alpine           | 3.19, 3.20, 3.21 3.22                     |                                                                |
+# | oraclelinux      | 8, 9, 10                                  |                                                                |
+# | suse             | sle15                          			 |                                                                |
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 OS_RELEASE  ?= ubuntu
-OS_VERSION  ?= 22.04
+OS_VERSION  ?= 24.04
 BASE_IMAGE  = "docker.io/$(OS_RELEASE):$(OS_VERSION)"
 IMAGE_TAG   = "agent_$(OS_RELEASE)_$(OS_VERSION)"
 DOCKERFILE_PATH = "./test/docker/nginx-oss/$(CONTAINER_OS_TYPE)/Dockerfile"
@@ -48,7 +48,10 @@ MANIFEST_DIR	?= /var/lib/nginx-agent
 DIRS            = $(BUILD_DIR) $(TEST_BUILD_DIR) $(BUILD_DIR)/$(DOCS_DIR) $(BUILD_DIR)/$(DOCS_DIR)/$(PROTO_DIR)
 $(shell mkdir -p $(DIRS))
 
-VERSION 		?= "v3.0.0"
+VERSION ?= $(shell git describe --match "v[0-9]*" --abbrev=0 --tags)
+ifeq ($(strip $(VERSION)),)
+	VERSION := $(shell curl https://api.github.com/repos/nginx/agent/releases/latest -s | jq .name -r)
+endif
 COMMIT  		= $(shell git rev-parse --short HEAD)
 DATE    		= $(shell date +%F_%H-%M-%S)
 LDFLAGS 		= "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
@@ -62,7 +65,7 @@ APK_PACKAGE := ./build/$(PACKAGE_NAME).apk
 DEB_PACKAGE := ./build/$(PACKAGE_NAME).deb
 RPM_PACKAGE := ./build/$(PACKAGE_NAME).rpm
 
-MOCK_MANAGEMENT_PLANE_CONFIG_DIRECTORY ?=
+MOCK_MANAGEMENT_PLANE_CONFIG_DIRECTORY ?= 
 MOCK_MANAGEMENT_PLANE_LOG_LEVEL ?= INFO
 MOCK_MANAGEMENT_PLANE_GRPC_ADDRESS ?= 127.0.0.1:0
 MOCK_MANAGEMENT_PLANE_API_ADDRESS ?= 127.0.0.1:0
@@ -104,7 +107,6 @@ include Makefile.containers
 include Makefile.packaging
 
 .PHONY: help clean no-local-changes build lint format unit-test integration-test run dev run-mock-management-grpc-server generate generate-mocks local-apk-package local-deb-package local-rpm-package
-
 help: ## Show help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\033[36m\033[0m\n"} /^[$$()% 0-9a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
@@ -161,13 +163,13 @@ integration-test: $(SELECTED_PACKAGE) build-mock-management-plane-grpc
 	TEST_ENV="Container" CONTAINER_OS_TYPE=$(CONTAINER_OS_TYPE) BUILD_TARGET="install-agent-local" CONTAINER_NGINX_IMAGE_REGISTRY=${CONTAINER_NGINX_IMAGE_REGISTRY} \
 	PACKAGES_REPO=$(OSS_PACKAGES_REPO) PACKAGE_NAME=$(PACKAGE_NAME) BASE_IMAGE=$(BASE_IMAGE) DOCKERFILE_PATH=$(DOCKERFILE_PATH) IMAGE_PATH=$(IMAGE_PATH) TAG=${IMAGE_TAG} \
 	OS_VERSION=$(OS_VERSION) OS_RELEASE=$(OS_RELEASE) \
-	go test -v ./test/integration/installuninstall ./test/integration/managementplane ./test/integration/nginxless
+	go test -v ./test/integration/installuninstall ./test/integration/managementplane ./test/integration/auxiliarycommandserver ./test/integration/nginxless
 	
 official-image-integration-test: $(SELECTED_PACKAGE) build-mock-management-plane-grpc
 	TEST_ENV="Container" CONTAINER_OS_TYPE=$(CONTAINER_OS_TYPE) CONTAINER_NGINX_IMAGE_REGISTRY=${CONTAINER_NGINX_IMAGE_REGISTRY} BUILD_TARGET="install" \
 	PACKAGES_REPO=$(OSS_PACKAGES_REPO) TAG=${TAG} PACKAGE_NAME=$(PACKAGE_NAME) BASE_IMAGE=$(BASE_IMAGE) DOCKERFILE_PATH=$(OFFICIAL_IMAGE_DOCKERFILE_PATH) \
 	OS_VERSION=$(OS_VERSION) OS_RELEASE=$(OS_RELEASE) IMAGE_PATH=$(IMAGE_PATH) \
-	go test -v ./test/integration/managementplane
+	go test -v ./test/integration/managementplane ./test/integration/auxiliarycommandserver
 
 performance-test:
 	@mkdir -p $(TEST_BUILD_DIR)

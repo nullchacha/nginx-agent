@@ -261,6 +261,31 @@ var (
     }
   }
 `
+
+	testConf22 = ` server {
+	listen unix:/var/lib/nginx/nginx-plus-api.sock;
+	access_log off;
+
+	# $config_version_mismatch is defined in /etc/nginx/config-version.conf
+	location /configVersionCheck {
+		if ($config_version_mismatch) {
+			return 503;
+		}
+		return 200;
+	}
+
+	location /api {
+		api write=on;
+	}
+}
+
+server {
+	listen unix:/var/lib/nginx/nginx-418-server.sock;
+	access_log off;
+
+	return 418;
+}
+`
 )
 
 // nolint: maintidx
@@ -367,7 +392,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 				errorLog.Name(),
 				[]*mpi.File{&allowedFileWithMetas},
 				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
-				nil,
+				[]string{},
 			),
 			expectedLog:        "",
 			allowedDirectories: []string{dir},
@@ -383,7 +408,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 				Files:            []*mpi.File{},
 				AccessLogs:       []*model.AccessLog{},
 				ErrorLogs:        []*model.ErrorLog{},
-				NAPSysLogServers: nil,
+				NAPSysLogServers: []string{},
 			},
 			allowedDirectories: []string{dir},
 		},
@@ -440,7 +465,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 				errorLog.Name(),
 				[]*mpi.File{&certFileWithMetas},
 				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
-				nil,
+				[]string{},
 			),
 			allowedDirectories: []string{dir},
 		},
@@ -458,7 +483,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 				errorLog.Name(),
 				[]*mpi.File{&diffCertFileWithMetas, &certFileWithMetas},
 				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
-				nil,
+				[]string{},
 			),
 			allowedDirectories: []string{dir},
 		},
@@ -476,9 +501,38 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 				errorLog.Name(),
 				[]*mpi.File{&certFileWithMetas},
 				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
-				nil,
+				[]string{},
 			),
 			allowedDirectories: []string{dir},
+		},
+		{
+			name:     "Test 10: Available NAP syslog server",
+			instance: protos.NginxPlusInstance([]string{}),
+			content: testconfig.NginxConfigWithMultipleSysLogs(errorLog.Name(), accessLog.Name(),
+				"192.168.12.34:1517", "my.domain.com:1517", "127.0.0.1:1515"),
+			expectedConfigContext: modelHelpers.ConfigContextWithSysLog(
+				accessLog.Name(),
+				errorLog.Name(),
+				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
+				[]string{"127.0.0.1:1515"},
+			),
+			allowedDirectories: []string{dir},
+			expectedLog:        "Found NAP syslog server",
+		},
+		{
+			name:     "Test 11: Unavailable NAP syslog server",
+			instance: protos.NginxPlusInstance([]string{}),
+			content: testconfig.NginxConfigWithMultipleSysLogs(errorLog.Name(), accessLog.Name(),
+				"192.168.12.34:1517", "my.domain.com:1517", "not.allowed:1515"),
+			expectedConfigContext: modelHelpers.ConfigContextWithSysLog(
+				accessLog.Name(),
+				errorLog.Name(),
+				protos.NginxPlusInstance([]string{}).GetInstanceMeta().GetInstanceId(),
+				[]string{},
+			),
+			allowedDirectories: []string{dir},
+			expectedLog: "Could not find available local NGINX App Protect syslog server. " +
+				"Security violations will not be collected.",
 		},
 	}
 
@@ -507,6 +561,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 			result, parseError := nginxConfig.Parse(ctx, test.instance)
 			require.NoError(t, parseError)
 
+			t.Logf("Log: %s", logBuf.String())
 			helpers.ValidateLog(t, test.expectedLog, logBuf)
 			logBuf.Reset()
 
@@ -529,7 +584,7 @@ func TestNginxConfigParser_Parse(t *testing.T) {
 			assert.ElementsMatch(t, test.expectedConfigContext.ErrorLogs, result.ErrorLogs)
 			assert.Equal(t, test.expectedConfigContext.StubStatus, result.StubStatus)
 			assert.Equal(t, test.expectedConfigContext.InstanceID, result.InstanceID)
-			assert.Equal(t, len(test.expectedConfigContext.Files), len(result.Files))
+			assert.Len(t, result.Files, len(test.expectedConfigContext.Files))
 		})
 	}
 }
@@ -555,6 +610,85 @@ func TestNginxConfigParser_sslCert(t *testing.T) {
 	nginxConfig.agentConfig.AllowedDirectories = []string{dir}
 	sslCert = nginxConfig.sslCert(ctx, certFile, dir)
 	assert.Equal(t, certFile, sslCert.GetFileMeta().GetName())
+}
+
+func TestNginxConfigParser_SyslogServerParse(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	file := helpers.CreateFileWithErrorCheck(t, dir, "nginx-parse-config.conf")
+	defer helpers.RemoveFileWithErrorCheck(t, file.Name())
+
+	errorLog := helpers.CreateFileWithErrorCheck(t, dir, "error.log")
+	defer helpers.RemoveFileWithErrorCheck(t, errorLog.Name())
+
+	accessLog := helpers.CreateFileWithErrorCheck(t, dir, "access.log")
+	defer helpers.RemoveFileWithErrorCheck(t, accessLog.Name())
+
+	instance := protos.NginxOssInstance([]string{})
+	instance.InstanceRuntime.ConfigPath = file.Name()
+
+	tests := []struct {
+		content               string
+		expectedLog           string
+		name                  string
+		expectedSyslogServers []string
+		portInUse             bool
+	}{
+		{
+			name:                  "Test 1: Valid port",
+			expectedSyslogServers: []string{"127.0.0.1:1515"},
+			content: testconfig.NginxConfigWithMultipleSysLogs(errorLog.Name(), accessLog.Name(),
+				"192.168.12.34:1517", "my.domain.com:1517", "127.0.0.1:1515"),
+			expectedLog: "Found NAP syslog server",
+		},
+		{
+			name:                  "Test 2: No valid server",
+			expectedSyslogServers: []string{},
+			content: testconfig.NginxConfigWithMultipleSysLogs(errorLog.Name(), accessLog.Name(),
+				"random.domain:1515", "192.168.12.34:1517", "my.domain.com:1517"),
+			expectedLog: "Could not find available local NGINX App Protect syslog server. " +
+				"Security violations will not be collected.",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logBuf := &bytes.Buffer{}
+			stub.StubLoggerWith(logBuf)
+
+			agentConfig := types.AgentConfig()
+			agentConfig.AllowedDirectories = []string{dir}
+			nginxConfig := NewNginxConfigParser(agentConfig)
+
+			writeErr := os.WriteFile(file.Name(), []byte(test.content), 0o600)
+			require.NoError(t, writeErr)
+
+			result, parseError := nginxConfig.Parse(ctx, instance)
+			require.NoError(t, parseError)
+
+			t.Logf("Log: %s", logBuf.String())
+			helpers.ValidateLog(t, test.expectedLog, logBuf)
+			logBuf.Reset()
+
+			assert.Equal(t, test.expectedSyslogServers, result.NAPSysLogServers)
+		})
+	}
+}
+
+func TestNginxConfigParser_findValidSysLogServers(t *testing.T) {
+	servers := []string{
+		"syslog:server=192.168.12.34:1517", "syslog:server=my.domain.com:1517", "syslog:server=127.0.0.1:1515",
+		"syslog:server=localhost:1516", "syslog:server=127.255.255.255:1517",
+	}
+	expected := []string{"", "", "127.0.0.1:1515", "localhost:1516", "127.255.255.255:1517"}
+	ncp := NewNginxConfigParser(types.AgentConfig())
+
+	for i, server := range servers {
+		result := ncp.findLocalSysLogServers(server)
+
+		assert.Equal(t, expected[i], result)
+	}
 }
 
 func TestNginxConfigParser_checkLog(t *testing.T) {
@@ -965,8 +1099,19 @@ func TestNginxConfigParser_urlsForLocationDirective(t *testing.T) {
 					Location: "/api",
 				},
 			},
-			name: "Test 21: listen unix:/var/run/nginx/nginx-plus-api.sock- Plus Unix Socket",
+			name: "Test 21: listen unix:/var/run/nginx/nginx-plus-api.sock - Plus Unix Socket",
 			conf: testConf21,
+		},
+		{
+			plus: []*model.APIDetails{
+				{
+					URL:      "http://nginx-plus-api/api",
+					Listen:   "unix:/var/lib/nginx/nginx-plus-api.sock",
+					Location: "/api",
+				},
+			},
+			name: "Test 22: Multiple Plus Unix Sockets",
+			conf: testConf22,
 		},
 	} {
 		ctx := context.Background()
@@ -991,9 +1136,9 @@ func TestNginxConfigParser_urlsForLocationDirective(t *testing.T) {
 			assert.Len(t, xpConf.Parsed, 1)
 			err = ncp.crossplaneConfigTraverse(ctx, &xpConf,
 				func(ctx context.Context, parent, directive *crossplane.Directive) error {
-					_oss := ncp.urlsForLocationDirectiveAPIDetails(parent, directive,
+					_oss := ncp.urlsForLocationDirectiveAPIDetails(ctx, parent, directive,
 						stubStatusAPIDirective)
-					_plus := ncp.urlsForLocationDirectiveAPIDetails(parent, directive, plusAPIDirective)
+					_plus := ncp.urlsForLocationDirectiveAPIDetails(ctx, parent, directive, plusAPIDirective)
 					oss = append(oss, _oss...)
 					plus = append(plus, _plus...)
 
@@ -1340,8 +1485,64 @@ func TestNginxConfigParser_checkDuplicate(t *testing.T) {
 	}
 }
 
+func TestNginxConfigParser_parseIncludeDirective(t *testing.T) {
+	parser := NewNginxConfigParser(types.AgentConfig())
+
+	tests := []struct {
+		name     string
+		confFile string
+		expected string
+		args     []string
+	}{
+		{
+			name:     "Test 1: relative path",
+			args:     []string{"test.conf"},
+			confFile: "/etc/nginx/nginx.conf",
+			expected: "/etc/nginx/test.conf",
+		},
+		{
+			name:     "Test 2: absolute path",
+			args:     []string{"/usr/local/nginx/conf/vhost.conf"},
+			confFile: "/etc/nginx/nginx.conf",
+			expected: "/usr/local/nginx/conf/vhost.conf",
+		},
+		{
+			name:     "Test 3: wildcard",
+			args:     []string{"/etc/nginx/conf.d/*.conf"},
+			confFile: "/etc/nginx/nginx.conf",
+			expected: "/etc/nginx/conf.d/*.conf",
+		},
+		{
+			name:     "Test 4: relative path with subdirectory",
+			args:     []string{"conf.d/default.conf"},
+			confFile: "/etc/nginx/nginx.conf",
+			expected: "/etc/nginx/conf.d/default.conf",
+		},
+		{
+			name:     "Test 5: parent directory reference",
+			args:     []string{"../sites-enabled/*.conf"},
+			confFile: "/etc/nginx/conf.d/nginx.conf",
+			expected: "/etc/nginx/sites-enabled/*.conf",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			include := parser.parseIncludeDirective(
+				&crossplane.Directive{
+					Args: tc.args,
+				},
+				&crossplane.Config{
+					File: tc.confFile,
+				},
+			)
+			assert.Equal(t, tc.expected, include)
+		})
+	}
+}
+
 func protoListEqual(protoListA, protoListB []*mpi.File) bool {
-	for i := 0; i < len(protoListA); i++ {
+	for i := range protoListA {
 		res := proto.Equal(protoListA[i], protoListB[i])
 		if !res {
 			return false

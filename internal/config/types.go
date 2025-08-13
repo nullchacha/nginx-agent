@@ -6,11 +6,16 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+
+	"google.golang.org/grpc/metadata"
 
 	"github.com/google/uuid"
 )
@@ -33,6 +38,7 @@ func parseServerType(str string) (ServerType, bool) {
 type (
 	Config struct {
 		Command            *Command         `yaml:"command"             mapstructure:"command"`
+		AuxiliaryCommand   *Command         `yaml:"auxiliary_command"   mapstructure:"auxiliary_command"`
 		Log                *Log             `yaml:"log"                 mapstructure:"log"`
 		DataPlaneConfig    *DataPlaneConfig `yaml:"data_plane_config"   mapstructure:"data_plane_config"`
 		Client             *Client          `yaml:"client"              mapstructure:"client"`
@@ -57,6 +63,7 @@ type (
 	}
 
 	NginxDataPlaneConfig struct {
+		APITls                 TLSConfig     `yaml:"api_tls"                  mapstructure:"api_tls"`
 		ExcludeLogs            []string      `yaml:"exclude_logs"             mapstructure:"exclude_logs"`
 		ReloadMonitoringPeriod time.Duration `yaml:"reload_monitoring_period" mapstructure:"reload_monitoring_period"`
 		TreatWarningsAsErrors  bool          `yaml:"treat_warnings_as_errors" mapstructure:"treat_warnings_as_errors"`
@@ -103,13 +110,25 @@ type (
 		Exporters  Exporters  `yaml:"exporters"   mapstructure:"exporters"`
 		Extensions Extensions `yaml:"extensions"  mapstructure:"extensions"`
 		Processors Processors `yaml:"processors"  mapstructure:"processors"`
+		Pipelines  Pipelines  `yaml:"pipelines"   mapstructure:"pipelines"`
 		Receivers  Receivers  `yaml:"receivers"   mapstructure:"receivers"`
 	}
 
+	Pipelines struct {
+		Metrics map[string]*Pipeline `yaml:"metrics" mapstructure:"metrics"`
+		Logs    map[string]*Pipeline `yaml:"logs"    mapstructure:"logs"`
+	}
+
+	Pipeline struct {
+		Receivers  []string `yaml:"receivers"  mapstructure:"receivers"`
+		Processors []string `yaml:"processors" mapstructure:"processors"`
+		Exporters  []string `yaml:"exporters"  mapstructure:"exporters"`
+	}
+
 	Exporters struct {
-		Debug              *DebugExporter      `yaml:"debug"      mapstructure:"debug"`
-		PrometheusExporter *PrometheusExporter `yaml:"prometheus" mapstructure:"prometheus"`
-		OtlpExporters      []OtlpExporter      `yaml:"otlp"       mapstructure:"otlp"`
+		Debug              *DebugExporter           `yaml:"debug"      mapstructure:"debug"`
+		PrometheusExporter *PrometheusExporter      `yaml:"prometheus" mapstructure:"prometheus"`
+		OtlpExporters      map[string]*OtlpExporter `yaml:"otlp"       mapstructure:"otlp"`
 	}
 
 	OtlpExporter struct {
@@ -152,10 +171,11 @@ type (
 
 	// OTel Collector Processors configuration.
 	Processors struct {
-		Attribute    *Attribute    `yaml:"attribute" mapstructure:"attribute"`
-		Resource     *Resource     `yaml:"resource"  mapstructure:"resource"`
-		Batch        *Batch        `yaml:"batch"     mapstructure:"batch"`
-		SyslogParser *SyslogParser `yaml:"syslog_parser" mapstructure:"syslog_parser"`
+		Attribute    map[string]*Attribute    `yaml:"attribute" mapstructure:"attribute"`
+		Resource     map[string]*Resource     `yaml:"resource"  mapstructure:"resource"`
+		Batch        map[string]*Batch        `yaml:"batch"     mapstructure:"batch"`
+		LogsGzip     map[string]*LogsGzip     `yaml:"logsgzip"  mapstructure:"logsgzip"`
+		SyslogParser map[string]*SyslogParser `yaml:"syslog_parser" mapstructure:"syslog_parser"`
 	}
 
 	Attribute struct {
@@ -186,14 +206,16 @@ type (
 		Timeout          time.Duration `yaml:"timeout"             mapstructure:"timeout"`
 	}
 
+	LogsGzip struct{}
+
 	// OTel Collector Receiver configuration.
 	Receivers struct {
-		ContainerMetrics   *ContainerMetricsReceiver `yaml:"container_metrics" mapstructure:"container_metrics"`
-		HostMetrics        *HostMetrics              `yaml:"host_metrics"      mapstructure:"host_metrics"`
-		OtlpReceivers      []OtlpReceiver            `yaml:"otlp"              mapstructure:"otlp"`
-		NginxReceivers     []NginxReceiver           `yaml:"nginx"             mapstructure:"nginx"`
-		NginxPlusReceivers []NginxPlusReceiver       `yaml:"nginx_plus"        mapstructure:"nginx_plus"`
-		TcplogReceivers    []TcplogReceiver          `yaml:"tcplog"            mapstructure:"tcplog"`
+		ContainerMetrics   *ContainerMetricsReceiver  `yaml:"container_metrics" mapstructure:"container_metrics"`
+		HostMetrics        *HostMetrics               `yaml:"host_metrics"      mapstructure:"host_metrics"`
+		OtlpReceivers      map[string]*OtlpReceiver   `yaml:"otlp"              mapstructure:"otlp"`
+		TcplogReceivers    map[string]*TcplogReceiver `yaml:"tcplog"            mapstructure:"tcplog"`
+		NginxReceivers     []NginxReceiver            `yaml:"-"`
+		NginxPlusReceivers []NginxPlusReceiver        `yaml:"-"`
 	}
 
 	OtlpReceiver struct {
@@ -226,6 +248,7 @@ type (
 		URL      string `yaml:"url"      mapstructure:"url"`
 		Listen   string `yaml:"listen"   mapstructure:"listen"`
 		Location string `yaml:"location" mapstructure:"location"`
+		Ca       string `yaml:"ca"       mapstructure:"ca"`
 	}
 
 	AccessLog struct {
@@ -321,9 +344,13 @@ type (
 
 func (col *Collector) Validate(allowedDirectories []string) error {
 	var err error
-	cleaned := filepath.Clean(col.ConfigPath)
+	cleanedConfPath := filepath.Clean(col.ConfigPath)
 
-	if !isAllowedDir(cleaned, allowedDirectories) {
+	allowed, err := isAllowedDir(cleanedConfPath, allowedDirectories)
+	if err != nil {
+		return err
+	}
+	if !allowed {
 		err = errors.Join(err, fmt.Errorf("collector path %s not allowed", col.ConfigPath))
 	}
 
@@ -341,8 +368,12 @@ func (nr *NginxReceiver) Validate(allowedDirectories []string) error {
 	}
 
 	for _, al := range nr.AccessLogs {
-		if !isAllowedDir(al.FilePath, allowedDirectories) {
+		allowed, allowedError := isAllowedDir(al.FilePath, allowedDirectories)
+		if allowedError != nil {
 			err = errors.Join(err, fmt.Errorf("invalid nginx receiver access log path: %s", al.FilePath))
+		}
+		if !allowed {
+			err = errors.Join(err, fmt.Errorf("nginx receiver access log path %s not allowed", al.FilePath))
 		}
 
 		if len(al.FilePath) != 0 {
@@ -356,10 +387,16 @@ func (nr *NginxReceiver) Validate(allowedDirectories []string) error {
 }
 
 func (c *Config) IsDirectoryAllowed(directory string) bool {
-	return isAllowedDir(directory, c.AllowedDirectories)
+	allow, err := isAllowedDir(directory, c.AllowedDirectories)
+	if err != nil {
+		slog.Warn("Unable to determine if directory is allowed", "error", err)
+		return false
+	}
+
+	return allow
 }
 
-func (c *Config) IsGrpcClientConfigured() bool {
+func (c *Config) IsCommandGrpcClientConfigured() bool {
 	return c.Command != nil &&
 		c.Command.Server != nil &&
 		c.Command.Server.Host != "" &&
@@ -367,13 +404,12 @@ func (c *Config) IsGrpcClientConfigured() bool {
 		c.Command.Server.Type == Grpc
 }
 
-func (c *Config) IsAuthConfigured() bool {
-	return c.Command.Auth != nil &&
-		(c.Command.Auth.Token != "" || c.Command.Auth.TokenPath != "")
-}
-
-func (c *Config) IsTLSConfigured() bool {
-	return c.Command.TLS != nil
+func (c *Config) IsAuxiliaryCommandGrpcClientConfigured() bool {
+	return c.AuxiliaryCommand != nil &&
+		c.AuxiliaryCommand.Server != nil &&
+		c.AuxiliaryCommand.Server.Host != "" &&
+		c.AuxiliaryCommand.Server.Port != 0 &&
+		c.AuxiliaryCommand.Server.Type == Grpc
 }
 
 func (c *Config) IsFeatureEnabled(feature string) bool {
@@ -414,12 +450,45 @@ func (c *Config) AreReceiversConfigured() bool {
 		len(c.Collector.Receivers.TcplogReceivers) > 0
 }
 
-func isAllowedDir(dir string, allowedDirs []string) bool {
-	for _, allowedDirectory := range allowedDirs {
-		if strings.HasPrefix(dir, allowedDirectory) {
-			return true
+func (c *Config) NewContextWithLabels(ctx context.Context) context.Context {
+	md := metadata.Pairs()
+	for key, value := range c.Labels {
+		valueString, ok := value.(string)
+		if ok {
+			md.Set(key, valueString)
 		}
 	}
 
-	return false
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
+// isAllowedDir checks if the given path is in the list of allowed directories.
+// It returns true if the path is allowed, false otherwise.
+// If the path is allowed but does not exist, it also logs a warning.
+// It also checks if the path is a file, in which case it checks the parent directory of the file.
+func isAllowedDir(path string, allowedDirs []string) (bool, error) {
+	if len(allowedDirs) == 0 {
+		return false, errors.New("no allowed directories configured")
+	}
+
+	directoryPath := path
+	// Check if the path is a file, regex matches when end of string is /<filename>.<extension>
+	isFilePath, err := regexp.MatchString(`/(\w+)\.(\w+)$`, directoryPath)
+	if err != nil {
+		return false, errors.New("error matching path" + directoryPath)
+	}
+
+	if isFilePath {
+		directoryPath = filepath.Dir(directoryPath)
+	}
+
+	for _, allowedDirectory := range allowedDirs {
+		// Check if the directoryPath starts with the allowedDirectory
+		// This allows for subdirectories within the allowed directories.
+		if strings.HasPrefix(directoryPath, allowedDirectory) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }

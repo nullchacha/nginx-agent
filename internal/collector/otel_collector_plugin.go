@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -37,7 +38,7 @@ const (
 	// 2024-11-16T17:19:24+00:00 ---> Nov 16 17:19:24
 	timestampConversionExpression = `'EXPR(let timestamp = split(split(body, ">")[1], " ")[0]; ` +
 		`let newTimestamp = ` +
-		`timestamp matches "(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})([+-]\\d{2}:\\d{2}|Z)" ` +
+		`timestamp matches "(\\d{4})-(\\d{2})-(0\\d{1})T(\\d{2}):(\\d{2}):(\\d{2})([+-]\\d{2}:\\d{2}|Z)" ` +
 		`? (let utcTime = ` +
 		`date(timestamp).UTC(); utcTime.Format("Jan  2 15:04:05")) : date(timestamp).Format("Jan 02 15:04:05"); ` +
 		`split(body, ">")[0] + ">" + newTimestamp + " " + split(body, " ", 2)[1])'`
@@ -46,11 +47,12 @@ const (
 type (
 	// Collector The OTel collector plugin start an embedded OTel collector for metrics collection in the OTel format.
 	Collector struct {
-		service types.CollectorInterface
-		cancel  context.CancelFunc
-		config  *config.Config
-		mu      *sync.Mutex
-		stopped bool
+		service                 types.CollectorInterface
+		config                  *config.Config
+		mu                      *sync.Mutex
+		cancel                  context.CancelFunc
+		previousNAPSysLogServer string
+		stopped                 bool
 	}
 )
 
@@ -60,7 +62,7 @@ var (
 )
 
 // NewCollector is the constructor for the Collector plugin.
-func New(conf *config.Config) (*Collector, error) {
+func NewCollector(conf *config.Config) (*Collector, error) {
 	initMutex.Lock()
 
 	defer initMutex.Unlock()
@@ -86,10 +88,11 @@ func New(conf *config.Config) (*Collector, error) {
 	}
 
 	return &Collector{
-		config:  conf,
-		service: oTelCollector,
-		stopped: true,
-		mu:      &sync.Mutex{},
+		config:                  conf,
+		service:                 oTelCollector,
+		stopped:                 true,
+		mu:                      &sync.Mutex{},
+		previousNAPSysLogServer: "",
 	}, nil
 }
 
@@ -134,75 +137,6 @@ func (oc *Collector) Init(ctx context.Context, mp bus.MessagePipeInterface) erro
 	}
 
 	return nil
-}
-
-// Process receivers and log warning for sub-optimal configurations
-func (oc *Collector) processReceivers(ctx context.Context, receivers []config.OtlpReceiver) {
-	for _, receiver := range receivers {
-		if receiver.OtlpTLSConfig == nil {
-			slog.WarnContext(ctx, "OTel receiver is configured without TLS. Connections are unencrypted.")
-			continue
-		}
-
-		if receiver.OtlpTLSConfig.GenerateSelfSignedCert {
-			slog.WarnContext(ctx,
-				"Self-signed certificate for OTel receiver requested, "+
-					"this is not recommended for production environments.",
-			)
-
-			if receiver.OtlpTLSConfig.ExistingCert {
-				slog.WarnContext(ctx,
-					"Certificate file already exists, skipping self-signed certificate generation",
-				)
-			}
-		} else {
-			slog.WarnContext(ctx, "OTel receiver is configured without TLS. Connections are unencrypted.")
-		}
-	}
-}
-
-// nolint: revive, cyclop
-func (oc *Collector) bootup(ctx context.Context) error {
-	errChan := make(chan error)
-
-	go func() {
-		if oc.service == nil {
-			errChan <- fmt.Errorf("unable to start OTel collector: service is nil")
-			return
-		}
-
-		appErr := oc.service.Run(ctx)
-		if appErr != nil {
-			errChan <- appErr
-		}
-		slog.InfoContext(ctx, "OTel collector run finished")
-	}()
-
-	for {
-		select {
-		case err := <-errChan:
-			return err
-		default:
-			if oc.service == nil {
-				return fmt.Errorf("unable to start otel collector: service is nil")
-			}
-
-			state := oc.service.GetState()
-			switch state {
-			case otelcol.StateStarting:
-				// NoOp
-				continue
-			case otelcol.StateRunning:
-				oc.stopped = false
-				return nil
-			case otelcol.StateClosing:
-			case otelcol.StateClosed:
-				oc.stopped = true
-			default:
-				return fmt.Errorf("unable to start, otelcol state is %s", state)
-			}
-		}
-	}
 }
 
 // Info the plugin.
@@ -262,6 +196,75 @@ func (oc *Collector) Subscriptions() []string {
 	}
 }
 
+// Process receivers and log warning for sub-optimal configurations
+func (oc *Collector) processReceivers(ctx context.Context, receivers map[string]*config.OtlpReceiver) {
+	for _, receiver := range receivers {
+		if receiver.OtlpTLSConfig == nil {
+			slog.WarnContext(ctx, "OTel receiver is configured without TLS. Connections are unencrypted.")
+			continue
+		}
+
+		if receiver.OtlpTLSConfig.GenerateSelfSignedCert {
+			slog.WarnContext(ctx,
+				"Self-signed certificate for OTel receiver requested, "+
+					"this is not recommended for production environments.",
+			)
+
+			if receiver.OtlpTLSConfig.ExistingCert {
+				slog.WarnContext(ctx,
+					"Certificate file already exists, skipping self-signed certificate generation",
+				)
+			}
+		} else {
+			slog.WarnContext(ctx, "OTel receiver is configured without TLS. Connections are unencrypted.")
+		}
+	}
+}
+
+// nolint: revive, cyclop
+func (oc *Collector) bootup(ctx context.Context) error {
+	errChan := make(chan error)
+
+	go func() {
+		if oc.service == nil {
+			errChan <- errors.New("unable to start OTel collector: service is nil")
+			return
+		}
+
+		appErr := oc.service.Run(ctx)
+		if appErr != nil {
+			errChan <- appErr
+		}
+		slog.InfoContext(ctx, "OTel collector run finished")
+	}()
+
+	for {
+		select {
+		case err := <-errChan:
+			return err
+		default:
+			if oc.service == nil {
+				return errors.New("unable to start otel collector: service is nil")
+			}
+
+			state := oc.service.GetState()
+			switch state {
+			case otelcol.StateStarting:
+				// NoOp
+				continue
+			case otelcol.StateRunning:
+				oc.stopped = false
+				return nil
+			case otelcol.StateClosing:
+			case otelcol.StateClosed:
+				oc.stopped = true
+			default:
+				return fmt.Errorf("unable to start, otelcol state is %s", state)
+			}
+		}
+	}
+}
+
 func (oc *Collector) handleNginxConfigUpdate(ctx context.Context, msg *bus.Message) {
 	slog.DebugContext(ctx, "OTel collector plugin received nginx config update message")
 	oc.mu.Lock()
@@ -317,12 +320,13 @@ func (oc *Collector) updateResourceProcessor(resourceUpdateContext *v1.Resource)
 	resourceProcessorUpdated := false
 
 	if oc.config.Collector.Processors.Resource == nil {
-		oc.config.Collector.Processors.Resource = &config.Resource{
+		oc.config.Collector.Processors.Resource = make(map[string]*config.Resource)
+		oc.config.Collector.Processors.Resource["default"] = &config.Resource{
 			Attributes: make([]config.ResourceAttribute, 0),
 		}
 	}
 
-	if oc.config.Collector.Processors.Resource != nil &&
+	if oc.config.Collector.Processors.Resource["default"] != nil &&
 		resourceUpdateContext.GetResourceId() != "" {
 		resourceProcessorUpdated = oc.updateResourceAttributes(
 			[]config.ResourceAttribute{
@@ -418,6 +422,7 @@ func (oc *Collector) checkForNewReceivers(ctx context.Context, nginxConfigContex
 					URL:      nginxConfigContext.PlusAPI.URL,
 					Listen:   nginxConfigContext.PlusAPI.Listen,
 					Location: nginxConfigContext.PlusAPI.Location,
+					Ca:       nginxConfigContext.PlusAPI.Ca,
 				},
 				CollectionInterval: defaultCollectionInterval,
 			},
@@ -431,12 +436,12 @@ func (oc *Collector) checkForNewReceivers(ctx context.Context, nginxConfigContex
 	}
 
 	if oc.config.IsFeatureEnabled(pkgConfig.FeatureLogsNap) {
-		tcplogReceiversFound := oc.updateTcplogReceivers(nginxConfigContext)
+		tcplogReceiversFound := oc.updateNginxAppProtectTcplogReceivers(nginxConfigContext)
 		if tcplogReceiversFound {
 			reloadCollector = true
 		}
 	} else {
-		slog.Debug("NAP logs feature disabled", "enabled_features", oc.config.Features)
+		slog.DebugContext(ctx, "NAP logs feature disabled", "enabled_features", oc.config.Features)
 	}
 
 	return reloadCollector
@@ -541,92 +546,97 @@ func (oc *Collector) updateExistingNginxOSSReceiver(
 	return nginxReceiverFound, reloadCollector
 }
 
-func (oc *Collector) updateTcplogReceivers(nginxConfigContext *model.NginxConfigContext) bool {
+func (oc *Collector) updateNginxAppProtectTcplogReceivers(nginxConfigContext *model.NginxConfigContext) bool {
 	newTcplogReceiverAdded := false
-	if nginxConfigContext.NAPSysLogServers != nil {
-	napLoop:
-		for _, napSysLogServer := range nginxConfigContext.NAPSysLogServers {
-			if oc.doesTcplogReceiverAlreadyExist(napSysLogServer) {
-				continue napLoop
-			}
 
-			oc.config.Collector.Receivers.TcplogReceivers = append(
-				oc.config.Collector.Receivers.TcplogReceivers,
-				config.TcplogReceiver{
-					ListenAddress: napSysLogServer,
-					Operators: []config.Operator{
-						{
-							Type: "add",
-							Fields: map[string]string{
-								"field": "body",
-								"value": timestampConversionExpression,
-							},
+	if oc.config.Collector.Receivers.TcplogReceivers == nil {
+		oc.config.Collector.Receivers.TcplogReceivers = make(map[string]*config.TcplogReceiver)
+	}
+
+	napSysLogServer := oc.findAvailableSyslogServers(nginxConfigContext.NAPSysLogServers)
+
+	if napSysLogServer != "" {
+		if !oc.doesTcplogReceiverAlreadyExist(napSysLogServer) {
+			oc.config.Collector.Receivers.TcplogReceivers["nginx_app_protect"] = &config.TcplogReceiver{
+				ListenAddress: napSysLogServer,
+				Operators: []config.Operator{
+					// regex captures the priority number from the log line
+					{
+						Type: "regex_parser",
+						Fields: map[string]string{
+							"regex":      "^<(?P<priority>\\d+)>",
+							"parse_from": "body",
+							"parse_to":   "attributes",
 						},
-						{
-							Type: "syslog_parser",
-							Fields: map[string]string{
-								"protocol": "rfc3164",
-							},
+					},
+					// filter drops all logs that have a severity above 4
+					// https://docs.secureauth.com/0902/en/how-to-read-a-syslog-message.html#severity-code-table
+					{
+						Type: "filter",
+						Fields: map[string]string{
+							"expr":       "'int(attributes.priority) % 8 > 4'",
+							"drop_ratio": "1.0",
 						},
-						{
-							Type: "remove",
-							Fields: map[string]string{
-								"field": "attributes.message",
-							},
+					},
+					{
+						Type: "add",
+						Fields: map[string]string{
+							"field": "body",
+							"value": timestampConversionExpression,
 						},
-						{
-							Type: "add",
-							Fields: map[string]string{
-								"field": "resource[\"instance.id\"]",
-								"value": nginxConfigContext.InstanceID,
-							},
+					},
+					{
+						Type: "syslog_parser",
+						Fields: map[string]string{
+							"protocol": "rfc3164",
+						},
+					},
+					{
+						Type: "remove",
+						Fields: map[string]string{
+							"field": "attributes.message",
+						},
+					},
+					{
+						Type: "add",
+						Fields: map[string]string{
+							"field": "resource[\"instance.id\"]",
+							"value": nginxConfigContext.InstanceID,
 						},
 					},
 				},
-			)
+			}
 
 			newTcplogReceiverAdded = true
 		}
 	}
 
-	tcplogReceiverDeleted := oc.areNapReceiversDeleted(nginxConfigContext)
+	tcplogReceiverDeleted := oc.areNapReceiversDeleted(napSysLogServer)
 
 	return newTcplogReceiverAdded || tcplogReceiverDeleted
 }
 
-func (oc *Collector) areNapReceiversDeleted(nginxConfigContext *model.NginxConfigContext) bool {
-	listenAddressesToBeDeleted := oc.configDeletedNapReceivers(nginxConfigContext)
+func (oc *Collector) areNapReceiversDeleted(napSysLogServer string) bool {
+	listenAddressesToBeDeleted := oc.configDeletedNapReceivers(napSysLogServer)
 	if len(listenAddressesToBeDeleted) != 0 {
-		oc.deleteNapReceivers(listenAddressesToBeDeleted)
+		delete(oc.config.Collector.Receivers.TcplogReceivers, "nginx_app_protect")
 		return true
 	}
 
 	return false
 }
 
-func (oc *Collector) deleteNapReceivers(listenAddressesToBeDeleted map[string]bool) {
-	filteredReceivers := (oc.config.Collector.Receivers.TcplogReceivers)[:0]
-	for _, receiver := range oc.config.Collector.Receivers.TcplogReceivers {
-		if !listenAddressesToBeDeleted[receiver.ListenAddress] {
-			filteredReceivers = append(filteredReceivers, receiver)
-		}
-	}
-	oc.config.Collector.Receivers.TcplogReceivers = filteredReceivers
-}
-
-func (oc *Collector) configDeletedNapReceivers(nginxConfigContext *model.NginxConfigContext) map[string]bool {
+func (oc *Collector) configDeletedNapReceivers(napSysLogServer string) map[string]bool {
 	elements := make(map[string]bool)
 
 	for _, tcplogReceiver := range oc.config.Collector.Receivers.TcplogReceivers {
 		elements[tcplogReceiver.ListenAddress] = true
 	}
 
-	if nginxConfigContext.NAPSysLogServers != nil {
+	if napSysLogServer != "" {
 		addressesToDelete := make(map[string]bool)
-		for _, napAddress := range nginxConfigContext.NAPSysLogServers {
-			if !elements[napAddress] {
-				addressesToDelete[napAddress] = true
-			}
+		if !elements[napSysLogServer] {
+			addressesToDelete[napSysLogServer] = true
 		}
 
 		return addressesToDelete
@@ -651,16 +661,16 @@ func (oc *Collector) updateResourceAttributes(
 ) (actionUpdated bool) {
 	actionUpdated = false
 
-	if oc.config.Collector.Processors.Resource.Attributes != nil {
+	if oc.config.Collector.Processors.Resource["default"].Attributes != nil {
 	OUTER:
 		for _, toAdd := range attributesToAdd {
-			for _, action := range oc.config.Collector.Processors.Resource.Attributes {
+			for _, action := range oc.config.Collector.Processors.Resource["default"].Attributes {
 				if action.Key == toAdd.Key {
 					continue OUTER
 				}
 			}
-			oc.config.Collector.Processors.Resource.Attributes = append(
-				oc.config.Collector.Processors.Resource.Attributes,
+			oc.config.Collector.Processors.Resource["default"].Attributes = append(
+				oc.config.Collector.Processors.Resource["default"].Attributes,
 				toAdd,
 			)
 			actionUpdated = true
@@ -668,6 +678,39 @@ func (oc *Collector) updateResourceAttributes(
 	}
 
 	return actionUpdated
+}
+
+func (oc *Collector) findAvailableSyslogServers(napSyslogServers []string) string {
+	napSyslogServersMap := make(map[string]bool)
+	for _, server := range napSyslogServers {
+		napSyslogServersMap[server] = true
+	}
+
+	if oc.previousNAPSysLogServer != "" {
+		if _, ok := napSyslogServersMap[oc.previousNAPSysLogServer]; ok {
+			return oc.previousNAPSysLogServer
+		}
+	}
+
+	for _, napSyslogServer := range napSyslogServers {
+		ln, err := net.Listen("tcp", napSyslogServer)
+		if err != nil {
+			slog.Debug("NAP syslog server is not reachable", "address", napSyslogServer,
+				"error", err)
+
+			continue
+		}
+		closeError := ln.Close()
+		if closeError != nil {
+			slog.Debug("Failed to close syslog server", "address", napSyslogServer, "error", closeError)
+		}
+
+		slog.Debug("Found valid NAP syslog server", "address", napSyslogServer)
+
+		return napSyslogServer
+	}
+
+	return ""
 }
 
 func isOSSReceiverChanged(nginxReceiver config.NginxReceiver, nginxConfigContext *model.NginxConfigContext) bool {

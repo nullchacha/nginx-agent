@@ -87,6 +87,14 @@ func TestProcess_IsNginxMaster(t *testing.T) {
 			cmd:  "nginx: cache manager process",
 			want: false,
 		},
+		"Test 5: nginx debug master": {
+			cmd:  "{nginx-debug} nginx: master process /usr/sbin/nginx-debug -g daemon off;",
+			want: true,
+		},
+		"Test 6: nginx debug worker": {
+			cmd:  "{nginx-debug} nginx: worker process;",
+			want: false,
+		},
 	}
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
@@ -216,14 +224,14 @@ func BenchmarkList(b *testing.B) {
 	b.Skipf("skipping to prevent CI flake")
 	ctx := context.Background()
 	b.Run("base", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, err := nginxprocess.List(ctx)
 			require.NoError(b, err)
 		}
 	})
 
 	b.Run("WithStatus", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, err := nginxprocess.List(ctx, nginxprocess.WithStatus(true))
 			require.NoError(b, err)
 		}
